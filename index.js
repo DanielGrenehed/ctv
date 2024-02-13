@@ -1,6 +1,10 @@
 const { Connection } = require('node-vmix');
 const io = require("socket.io-client");
+const express = require("express");
 const assert = require("assert");
+
+const app = express();
+let cvt_running = true;
 
 const config = require("./config.json");
 
@@ -83,8 +87,15 @@ vmix.on('close', () => {
 	console.log("Vmix connect failed");
 });
 
+let latest_video_source = {name:"", key:""};
 function setVideoSource(video_source) {
 	let key = video_key_map[video_source];
+
+	latest_video_source.name = video_source;
+	latest_video_source.key = key;
+	if (!cvt_running) {
+		return;
+	}
 	if (key == undefined) {
 		console.log(`Could not set source to '${video_source}', no corresponding key`);
 		return;
@@ -93,7 +104,7 @@ function setVideoSource(video_source) {
 		console.log(`VMIX not connected, cannot change video source! (tried to set ${video_source})`);
 		return;
 	}
-	vmix.send({Input:key});
+	//vmix.send({Input:key});
 }
 
 assert(config.hasOwnProperty("cumquat"));
@@ -117,7 +128,7 @@ socket.on("connect", () => {
 
 	socket.on("mixerMeters", (arg) => {
 		//console.log("mixerMeters");
-		//console.log(arg[1]);
+		//console.log(arg[1][8]);
 		onMeterUpdate(arg[1]);
 	});
 
@@ -127,11 +138,16 @@ socket.on("close", () => {
 	console.log("Socketio connect failed");
 });
 
+function cumquatTodB(vol) {
+	return 20*Math.log10(vol/100);
+}
+
 function updateVideoSource() {
 	let valid_sources = [];
 	for (let id in meter_buffers) {
-		const avg = meter_buffers[id].getAverage();
+		const avg = cumquatTodB(meter_buffers[id].getAverage());
 		if (avg > audio_sources[id].min_vol) {
+
 			valid_sources.push({id: id, avg: avg});
 		}			
 	}
@@ -143,11 +159,32 @@ function updateVideoSource() {
 		} 
 	});
 
-	console.log(`loudest source: ${JSON.stringify(loudest_source)}`);
+//	console.log(`loudest source: ${JSON.stringify(loudest_source)}`);
 	let video_source = loudest_source == undefined ? default_video_source : audio_sources[loudest_source.id].video_source;
-	setVideoSource(video_source);
+	if (loudest_source != undefined) console.log(`vol: ${loudest_source.avg}dB`);
+//	console.log(`ls: ${JSON.stringify(loudest_source)} vsk: ${video_key_map[video_source]}`);
+	//setVideoSource(video_source);
 }
+
+app.post("/start", (req, res) => {
+	cvt_running = true;	
+	console.log("CTV started");
+	res.send({});
+});
+app.post("/stop", (req, res) => {
+	cvt_running = false;
+	console.log("CTV stopped");
+	res.send({});
+});
+app.get("/status", (req, res) => {
+	console.log("CTV status");
+	res.send({running: cvt_running, latest_video_source: latest_video_source});
+});
 
 assert(config.hasOwnProperty("switch_delay_ms"));
 setInterval(updateVideoSource, config.switch_delay_ms);
+assert(config.hasOwnProperty("api_port"));
 
+app.listen(config.api_port, () => {
+    console.log('CTV listening on port %d', config.api_port)
+});
